@@ -122,16 +122,16 @@ if __name__ == '__main__':
 
     recursion_steps = N // 4
 
-    t  = 0.25   # nearest neighbour hopping
-    tp = 0.2   # next-nearest neighbour hopping
-    mu = 0.2 + -2*tp # chemical potential
+    t  = 0.25  # nearest neighbour hopping
+    tp = 0.20  # next-nearest neighbour hopping
+    mu = 0.20  # chemical potential
     
     # -- Build sparse periodic tightbinding Hamiltonian
     
     offsets = np.array([0, 1, -1, N-1, -N+1, 2, -2, N-2, -N+2])
     
     diag = np.ones((len(offsets), N))
-    diag[0] = mu
+    diag[0] = -mu
     diag[1:5] *= -t
     diag[5:9] *= tp
 
@@ -145,7 +145,7 @@ if __name__ == '__main__':
     A, B = lanczos_recursion(H, v, recursion_steps)
 
     eps = 1e-4
-    w = np.linspace(-1+eps, 1-eps, num=4000)
+    w = np.linspace(-1+eps, 1-eps, num=400)
 
     eta = 1.e-2
     z = w + 1.j * eta
@@ -165,7 +165,7 @@ if __name__ == '__main__':
     subp = [3, 1, 1]
     
     plt.subplot(*subp); subp[-1] += 1
-    plt.title(rf"1D chain $t={t}$ $t'={tp}$")
+    plt.title(rf"1D chain, $t={t}$, $t'={tp}$, $\mu={mu}$")
     plt.plot(w, dos_lanczos, label='Lanczos cont.frac.', alpha=0.75)
     plt.plot(w, dos_cheb, label='Chebshev', zorder=-100)    
     plt.ylabel(r'DOS')
@@ -180,8 +180,8 @@ if __name__ == '__main__':
     plt.legend(loc='best')
 
     plt.subplot(*subp); subp[-1] += 1
-    plt.plot(np.abs(mu_n), '.-', label=r'$\mu_n$')
-    plt.plot(np.abs(gmu_n), '.-', label=r'$\mu_n \cdot g_n$ (Jackson kernel)')
+    plt.plot(np.abs(mu_n), '.-', label=r'$|\mu_n|$')
+    plt.plot(np.abs(gmu_n), '.-', label=r'$|\mu_n \cdot g_n|$ (Jackson kernel)')
     plt.semilogy([], [])
     plt.ylabel('Chebyshev coeffs.')
     plt.xlabel('Index $n$')
@@ -189,4 +189,5 @@ if __name__ == '__main__':
     
     plt.tight_layout()
     plt.savefig('figure_1d_chain_Lanczos_vs_Chebyshev.pdf')
+    plt.savefig('figure_1d_chain_Lanczos_vs_Chebyshev.svg')
     plt.show()
