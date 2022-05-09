@@ -70,13 +70,32 @@ def evaluate_continued_fractions(z, A, B):
     return -f.imag / np.pi
 
 
-def chebyshev_recursion(H, v, steps):
+def sparse_eigsh_emin_emax(H):
+    from scipy.sparse.linalg import eigsh as sparse_eighsh
+    Emin = sparse_eighsh(H, which='SA', return_eigenvectors=False).min()
+    Emax = sparse_eighsh(H, which='LA', return_eigenvectors=False).max()
+    return Emin, Emax
+
+
+def chebyshev_shift_scale(Emin, Emax, eps=0.1):
+    scale = (Emax - Emin)/(2 - eps)
+    shift = (Emax + Emin)/2
+    return shift, scale
+
+    
+def chebyshev_recursion(H, v, steps, shift=0., scale=1.):
     """ Returns the Chebyshev moments `mu_n`
     of the matrix `H` using the starting vector `v`
     and the given number of `steps` for the recursion. """
 
+    def Hs(v):
+        res = H * v
+        res -= shift * v
+        res /= scale
+        return res
+    
     v_0 = v
-    v_1 = H*v_0
+    v_1 = Hs(v_0)
 
     mu = np.zeros(2*steps)
 
@@ -84,7 +103,7 @@ def chebyshev_recursion(H, v, steps):
     mu[1] = np.dot(v_1, v_0)
     
     for n in range(1, steps):
-        v_2 = 2*H*v_1 - v_0
+        v_2 = 2*Hs(v_1) - v_0
         mu[2*n]   = 2 * np.dot(v_1, v_1) - mu[0]
         mu[2*n+1] = 2 * np.dot(v_2, v_1) - mu[1]
         v_0, v_1 = v_1, v_2
@@ -104,27 +123,38 @@ def jackson_kernel(N):
     return k
 
 
-def evaluate_chebyshev(w, mu_n):
+def evaluate_chebyshev(w, mu_n, shift=0., scale=1.):
     """ Evaluation of the `mu_n` Chebyshev moment expansion for arbitrary frequencies. 
     (For faster evaluation on the Chebhshev collocation points use FFT.) """
-    
+
     mu_n = mu_n.copy()
     mu_n[1:] *= 2
-    dos = np.polynomial.chebyshev.chebval(w, mu_n)
-    dos /= np.sqrt(1 - w**2) * np.pi
+    dos = np.polynomial.chebyshev.chebval((w - shift)/scale, mu_n)
+    dos /= np.sqrt(scale**2 - (w - shift)**2) * np.pi
     
     return dos
 
 
+def chebyshev_gauss_quadrature(N):
+    """ Chebyshev-Gauss quadrature points and weights.
+    Jie Shen, Tao Tang, Li-Lian Wang, Spectral methods (2011) """
+    i = np.arange(N+1)
+    x_i = - np.cos((2*i + 1)*np.pi/(2*N + 2))
+    w_i = np.pi / (N + 1) * np.sqrt(1 - x_i**2)
+    return x_i, w_i
+
+
 if __name__ == '__main__':
 
-    N = 400 # system size, number of sites in 1D chain
+    N = 1000 # system size, number of sites in 1D chain
 
     recursion_steps = N // 4
 
     t  = 0.25  # nearest neighbour hopping
     tp = 0.20  # next-nearest neighbour hopping
     mu = 0.20  # chemical potential
+
+    t, tp, mu = 1.0, 0.7, -0.5
     
     # -- Build sparse periodic tightbinding Hamiltonian
     
@@ -137,6 +167,14 @@ if __name__ == '__main__':
 
     H = sp.dia_matrix((diag, offsets), shape=(N, N))
 
+    # -- Determine spectrum range Emin Emax
+    
+    Emin, Emax = sparse_eigsh_emin_emax(H)
+
+    eps = 0.5
+    w_min, w_max = Emin - eps/4, Emax + eps/4
+    w = np.linspace(w_min, w_max, num=recursion_steps*10)
+
     # -- Lanczos recursion
 
     v = np.zeros((N))
@@ -144,19 +182,53 @@ if __name__ == '__main__':
 
     A, B = lanczos_recursion(H, v, recursion_steps)
 
-    eps = 1e-4
-    w = np.linspace(-1+eps, 1-eps, num=400)
-
     eta = 1.e-2
     z = w + 1.j * eta
     dos_lanczos = evaluate_continued_fractions(z, A, B)
 
     # -- Chebyshev recursion
-    
-    mu_n = chebyshev_recursion(H, v, recursion_steps)
-    gmu_n = mu_n * jackson_kernel(len(mu_n))
-    dos_cheb = evaluate_chebyshev(w, gmu_n)
 
+    shift, scale = chebyshev_shift_scale(Emin, Emax, eps=eps)
+    mu_n = chebyshev_recursion(H, v, recursion_steps, shift, scale)
+    gmu_n = mu_n * jackson_kernel(len(mu_n))
+    dos_cheb = evaluate_chebyshev(w, gmu_n, shift, scale)
+
+    # -- Occupied moments
+
+    # -- Reference values using 2nd order trapezoidal method
+    
+    w_f = np.linspace(w_min, 0, num=10 * recursion_steps)
+    dos_f = evaluate_chebyshev(w_f, gmu_n, shift, scale)
+
+    M0_ref = np.trapz(dos_f, x=w_f)
+    M1_ref = np.trapz(dos_f * w_f, x=w_f)
+    M2_ref = np.trapz(dos_f * w_f**2, x=w_f)
+
+    # -- Chebyshev-Gauss quadrature with rescaling
+    
+    x_i, q_i = chebyshev_gauss_quadrature(recursion_steps)
+    w_i = 0.5*(x_i + 1) * w_min
+    q_i *= -w_min / 2
+
+    # -- Evaluate on quadrature nodes and integrate
+
+    dos_i = evaluate_chebyshev(w_i, gmu_n, shift, scale)
+    
+    M0 = np.sum(dos_i * q_i)
+    M1 = np.sum(dos_i * w_i * q_i)
+    M2 = np.sum(dos_i * w_i**2 * q_i)
+
+    print('--> Computed occupied moments')
+    
+    print(f'M0 (ref) = {M0_ref}')
+    print(f'M0       = {M0}')
+
+    print(f'M1 (ref) = {M1_ref}')
+    print(f'M1       = {M1}')
+
+    print(f'M2 (ref) = {M2_ref}')
+    print(f'M2       = {M2}')
+        
     # -- Visualization
     
     import matplotlib.pyplot as plt
