@@ -18,25 +18,6 @@ import scipy.sparse as sp
 import matplotlib.pyplot as plt
 
 
-def build_2d_nn_tight_binding_matrix(t, Nx, Ny):
-
-    x = np.arange(Nx)
-    y = np.arange(Ny)
-
-    X, Y = np.meshgrid(x, y)
-    r = np.vstack((X.flatten(), Y.flatten())).T
-
-    RmR = r[:,None,:] - r[None,:,:]
-
-    for idx, N in enumerate((Nx, Ny)):
-        RmR[:, :, idx] = np.mod(RmR[:, :, idx] + N//2, N) - N//2
-
-    L = np.linalg.norm(RmR, axis=2)
-
-    H = -t*(L == 1)
-    return H
-
-
 def build_real_space_hamiltonian(hopping, Nx, Ny, A):
 
     """ A is the applied vector poential """
@@ -218,9 +199,6 @@ def fermi_function(E, beta):
     f[midx] = np.exp(beta * Em) / (1 + np.exp(beta * Em))
 
     return f
-
-    #return (E > 0) / (1 + np.exp(-beta * E)) + \
-    #    (E <= 0) * np.exp(beta * E) / (1 + np.exp(beta * E))
     
 
 def density_from_momentum(eps_k, beta):
@@ -292,7 +270,7 @@ def get_mu_tensor(v_a, v_b, H, N):
         'n,m,n,m,ij,njk,kl,mli->nm',
         g, g, W, W, v_a.todense(), T, v_b.todense(), T)
 
-    mu /= N
+    mu /= N # FIXME: Figure out scale factor
 
     return mu
 
@@ -400,6 +378,9 @@ if __name__ == '__main__':
     def eval_sigma_integral(x, I, scale, mu, beta):
         f = fermi_function(x - mu/scale, beta*scale)
         sigma = np.trapz(I * f, x=x)
+
+        # FIXME: Figure out scale factor
+        
         #sigma *= -2/scale**2 * 4/np.pi
         #sigma *= -1/scale**2 * 4/np.pi
         sigma *= -1/scale**2 
