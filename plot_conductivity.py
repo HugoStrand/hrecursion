@@ -251,11 +251,11 @@ if __name__ == '__main__':
     test_real_and_momentum_space_repr()
 
     t = 1.0 # nn hopping
-    beta = 100.0 # Inverse temperature
+    beta = 10.0 # Inverse temperature
     mu = 0.0 # Chemical potential
     A = np.array([0.0, 0.0]) # External vector potential
 
-    N = 8
+    N = 4
     Nx, Ny = N, N
     
     r, RX, RY = get_real_space_vectors(Nx, Ny)
@@ -290,6 +290,8 @@ if __name__ == '__main__':
     #print(f'j_y = {j_y}')
 
     # ----------------------------------------------------------------
+
+    print('--> Cheb dos')
     
     from plot_lanczos_vs_chebyshev import *
 
@@ -313,7 +315,112 @@ if __name__ == '__main__':
     dos_cheb = evaluate_chebyshev(w, gmu_n, shift, scale)
     
     # ----------------------------------------------------------------
+
+    def chebyshev_matrix_recursion(H, N):
+
+        assert( N > 2 )
+
+        H = H.todense()
+
+        T = np.zeros([N] + list(H.shape), dtype=H.dtype)
+
+        T[0] = np.eye(H.shape[0])
+        T[1] = H
+        
+        for idx in range(2, N):
+            T[idx] = 2 * H @ T[idx-1] - T[idx-2]
+
+        return T
+
     
+    def get_W(N):
+        W = np.ones(N)
+        W[0] = 0.5
+        return W
+
+    
+    def get_mu_tensor(v_a, v_b, H, N):
+
+        W = get_W(N)
+        g = jackson_kernel(N)
+        #g = 0*g + 1 # DEBUG
+        T = chebyshev_matrix_recursion(H, N)
+
+        mu = np.einsum(
+            'n,m,n,m,ij,njk,kl,mli->nm',
+            g, g, W, W, v_a.todense(), T, v_b.todense(), T)
+
+        return mu
+
+    
+    def eval_Gamma_nm(x, N):
+
+        n = np.arange(N)
+        x = x[:, None]
+        n = n[None, :]
+
+        Cn = (x - 1j*n*np.sqrt(1 - x**2)) * np.exp(+1j * n * np.arccos(x))
+        Cm = (x + 1j*n*np.sqrt(1 - x**2)) * np.exp(-1j * n * np.arccos(x))
+        print(Cn.shape)
+
+        x = x.flatten()
+    
+        T = np.polynomial.chebyshev.chebvander(x, N-1)
+
+        Gamma = Cn[:, :, None] * T[:, :, None] * Cm[:, None, :] * T[:, None, :]
+
+        Gamma /= (1 - x[:, None, None]**2)**2 # Eq. 4 PRL 114, 116602
+        
+        return Gamma
+    
+    
+    print('--> Cheb cond')
+
+    H_s = H - sp.identity(H.shape[0]) * shift
+    H_s /= scale
+
+    E = np.linalg.eigvalsh(H_s.todense())
+    print(np.min(E), np.max(E))
+    
+    N_cheb = 64
+    mu_xx = get_mu_tensor(v_x, v_x, H_s, N_cheb)
+    print(mu_xx.shape)
+
+    eps = 1e-4
+    x = np.linspace(-1 + eps, 1 - eps, num=128)
+
+    Gamma = eval_Gamma_nm(x, N_cheb)
+    print(Gamma.shape)
+
+    I = np.einsum('xnm,nm->x', Gamma, mu_xx)
+    
+    #exit()
+    
+    n = np.arange(N_cheb)
+    nn = n[:, None] + n[None, :]
+
+    plt.figure(figsize=(8, 8))
+
+    subp = [2, 2, 1]
+
+    plt.subplot(*subp); subp[-1] += 1
+    plt.plot(nn.flatten(), np.abs(mu_xx.flatten().real), 'o', alpha=0.5)
+    plt.semilogy([], [])
+
+    plt.subplot(*subp); subp[-1] += 1
+    plt.plot(x, I.real, label='re')
+    #plt.plot(x, I.imag, label='im')
+    plt.semilogy([], [])
+    plt.legend()
+
+    plt.subplot(*subp); subp[-1] += 1
+    plt.plot(x, np.cumsum(I).real)
+
+    #plt.show()
+    #exit()
+    
+    # ----------------------------------------------------------------
+
     if False:
 
         subp = [2, 2, 1]
@@ -340,6 +447,8 @@ if __name__ == '__main__':
     
     # ---
 
+    print('--> Density')
+    
     plt.figure(figsize=(8, 8))
     
     subp = [2, 2, 1]
@@ -360,19 +469,29 @@ if __name__ == '__main__':
     ns = np.zeros_like(mus)
     ns_ref = np.zeros_like(mus)
 
+    djs = np.zeros_like(mus)
+
     for idx, mu in enumerate(mus):
         
-        eps_k, _, _ = \
+        eps_k, v_kx, v_ky = \
             get_momentum_dispersion_and_velocity_operators(t, A, mu, Nx, Ny)    
         ns_ref[idx] = density_from_momentum(eps_k, beta)
 
-        #H_r, _, _ = \
-        #    get_real_space_hamiltoian_and_velocity_operators(t, A, mu, Nx, Ny)
-        #rho = real_space_density_matrix(H_r, beta)
-        #ns[idx] = density_from_density_matrix(rho)
+        H_r, _, _ = \
+            get_real_space_hamiltoian_and_velocity_operators(t, A, mu, Nx, Ny)
+        rho = real_space_density_matrix(H_r, beta)
+        ns[idx] = density_from_density_matrix(rho)
 
-    #plt.plot(mus, ns, '--', label='real space')
+        j0 = current_from_momentum(eps_k, v_kx, beta)
+        dA = 0.01
+        A1 = np.array([-dA, 0])
+        eps_k, v_kx, v_ky = \
+            get_momentum_dispersion_and_velocity_operators(t, A1, mu, Nx, Ny)    
+        j1 = current_from_momentum(eps_k, v_kx, beta)
+        djs[idx] = (j1 - j0)/dA
+
     plt.plot(mus, ns_ref, '-', label='momentum space')
+    plt.plot(mus, ns, '--', label='real space')
 
     plt.plot(w, dos_cheb.real / np.max(dos_cheb.real), alpha=0.5)
     
@@ -382,7 +501,19 @@ if __name__ == '__main__':
     plt.grid(True)
     
     # ---
+
+    plt.subplot(*subp); subp[-1] += 1    
+
+    plt.plot(mus, djs, '-', label='momentum space')
+    plt.legend(loc='upper left')
+    plt.ylabel(r'$d \langle j_x \rangle / d A_x$')
+    plt.xlabel(r'$\mu$')
+    plt.grid(True)
+
+    # ---
         
+    print('--> Current')
+
     plt.subplot(*subp); subp[-1] += 1    
 
     mu = 0.0 # Chemical potential
@@ -397,27 +528,18 @@ if __name__ == '__main__':
             get_momentum_dispersion_and_velocity_operators(t, A, mu, Nx, Ny)    
         js_ref[idx] = current_from_momentum(eps_k, v_kx, beta)
         
-        #H_r, v_x, v_y = \
-        #    get_real_space_hamiltoian_and_velocity_operators(t, A, mu, Nx, Ny)
-        #rho = real_space_density_matrix(H_r, beta)
-        #js[idx] = operator_trace(rho, v_x).real
+        H_r, v_x, v_y = \
+            get_real_space_hamiltoian_and_velocity_operators(t, A, mu, Nx, Ny)
+        rho = real_space_density_matrix(H_r, beta)
+        js[idx] = operator_trace(rho, v_x).real
         #print(A, js[idx])
 
-    #plt.plot(As, js, '--', label='real space')
     plt.plot(As, js_ref, '-', label='momentum space')
+    plt.plot(As, js, '--', label='real space')
     
     plt.legend(loc='best')
     plt.ylabel(r'$\langle j_x \rangle$')
     plt.xlabel(r'$A_x$')
-    plt.grid(True)
-
-    plt.subplot(*subp); subp[-1] += 1
-
-    dA = As[1] - As[0]
-    sigma = np.diff(js_ref) * dA
-    plt.plot(As[:-1], sigma)
-    plt.xlabel(r'$A_x$')
-    plt.ylabel(r'$dj_x / dA_x$')
     plt.grid(True)
     
     plt.tight_layout()
