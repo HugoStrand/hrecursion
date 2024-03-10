@@ -403,7 +403,7 @@ if __name__ == '__main__':
 
     # ----------------------------------------------------------------
 
-    plt.figure(figsize=(8, 8))
+    plt.figure(figsize=(6, 10))
 
     subp = [3, 1, 1]
 
@@ -438,6 +438,7 @@ if __name__ == '__main__':
     plt.grid(True)
     
     plt.tight_layout()
+    plt.savefig('figure_conductivity_moments.svg')
     #plt.show(); exit()
     
     # ----------------------------------------------------------------
@@ -471,7 +472,7 @@ if __name__ == '__main__':
     
     print('--> Density')
     
-    plt.figure(figsize=(8, 8))
+    plt.figure(figsize=(6, 10))
     
     subp = [3, 1, 1]
 
@@ -544,6 +545,7 @@ if __name__ == '__main__':
     # --
     
     plt.tight_layout()
+    plt.savefig('figure_conductivity_comparison.svg')
     plt.show()
     
     exit()
