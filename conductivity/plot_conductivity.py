@@ -1,3 +1,15 @@
+"""
+Implementation of conductivity tensor calculation
+using Chebyshev moment evaluation.
+
+Comparing with conductivity from finite differences
+in the applied vector potential.
+
+Garcia, Covaci, Rappoport, PRL 114, 116602 (2015)
+https://doi.org/10.1103/PhysRevLett.114.116602
+
+Author: Hugo U. R. Strand (2024)
+"""
 
 import itertools
 import numpy as np
@@ -353,7 +365,7 @@ if __name__ == '__main__':
     
     print('--> Cheb cond')
 
-    N_cheb = 32
+    N_cheb = 64
     
     H_s = H - sp.identity(H.shape[0]) * shift
     H_s /= scale
