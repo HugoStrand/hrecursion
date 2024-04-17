@@ -114,8 +114,8 @@ def get_momentum_dispersion_and_velocity_operators(t, A, mu, Nx, Ny):
     #v_kx = 2 * np.sin(k[:, 0] - A[0])
     #v_ky = 2 * np.sin(k[:, 1] - A[1])
 
-    v_kx = 2 * np.sin(k[:, 0])
-    v_ky = 2 * np.sin(k[:, 1])
+    v_kx = 2 * t * np.sin(k[:, 0])
+    v_ky = 2 * t * np.sin(k[:, 1])
 
     return eps_k, v_kx, v_ky
 
@@ -253,6 +253,80 @@ def chebyshev_matrix_recursion(H, N):
     return T
 
 
+class ChebyshevVectorRecursion:
+
+    def __init__(self, H, v, Nmax):
+        self.H = H
+        self.v = v
+        self.n = 0
+        self.Nmax = Nmax
+
+    def __iter__(self):
+        return self
+    
+    def __next__(self):
+
+        #print(f'ChebRec: n = {self.n}')
+        
+        if self.n >= self.Nmax:
+            raise StopIteration
+        
+        if self.n > 1:
+            v2 = 2 * self.H @ self.v1 - self.v0
+            self.v0 = self.v1
+            self.v1 = v2
+        elif self.n == 0:
+            self.v1 = self.v.copy()
+        elif self.n == 1:
+            self.v0 = self.v1
+            self.v1 = self.H @ self.v0
+        else:
+            raise ValueError
+
+        self.n += 1
+        
+        return self.v1
+        
+
+def get_mu_tensor_stochastic_trace(v_a, v_b, H, N, R, Rblocks):
+
+    """
+    H : scipy.sparse.xxx_matrix
+        Hamiltonian matrix
+    N : int
+        Chebyshev max order
+    R : int
+        Number of concomitant random vectors.
+    Rblocks : int
+        Number of repretitions of R random vectors.
+
+    The total number of random vectors used is: `R * Rblocks`.
+    
+    """
+
+    M = H.shape[0]
+
+    mu = np.zeros((N, N), dtype=complex)
+
+    from tqdm import tqdm # For ascii art progress bar...
+
+    #for r in range(Rblocks):
+    for r in tqdm(range(Rblocks)):
+        
+        v = np.exp(2j*np.pi * np.random.random((M, R)))
+        v_conj = np.conj(v)
+
+        for n, vn in enumerate(ChebyshevVectorRecursion(H, v, N)):
+            w0 = v_b @ vn
+            for m, wm in enumerate(ChebyshevVectorRecursion(H, w0, N)):
+                #print(f'n, m = {n}, {m}')
+                mu[n, m] += np.sum(v_conj * (v_a @ wm)) / R
+
+    mu /= Rblocks
+    
+    return mu
+
+
 def get_W(N):
     W = np.ones(N)
     W[0] = 0.5
@@ -260,18 +334,11 @@ def get_W(N):
 
 
 def get_mu_tensor(v_a, v_b, H, N):
-
-    W = get_W(N)
-    g = jackson_kernel(N)
-    #g = 0*g + 1 # DEBUG
+    
     T = chebyshev_matrix_recursion(H, N)
 
-    mu = np.einsum(
-        'n,m,n,m,ij,njk,kl,mli->nm',
-        g, g, W, W, v_a.todense(), T, v_b.todense(), T)
-
-    mu /= N # FIXME: Figure out scale factor
-
+    mu = np.einsum('ij,njk,kl,mli->nm', v_a.todense(), T, v_b.todense(), T)
+    
     return mu
 
 
@@ -290,6 +357,11 @@ def eval_Gamma_nm(x, N):
     Gamma = Cn[:, :, None] * T[:, None, :] + Cm[:, None, :] * T[:, :, None]
     Gamma /= (1 - x[:, None, None]**2)**2 # Eq. 4 PRL 114, 116602
 
+    W = get_W(N)
+    g = jackson_kernel(N)
+
+    Gamma = np.einsum('xnm,n,m,n,m->xnm', Gamma, g, g, W, W)
+    
     return Gamma
 
 
@@ -297,12 +369,13 @@ if __name__ == '__main__':
 
     test_real_and_momentum_space_repr()
 
-    t = 1.0    # nn hopping
-    beta = 5.0 # Inverse temperature
+    t = 1.45    # nn hopping
+    beta = 2.0 # Inverse temperature
     mu = 0.0   # Chemical potential
     
     A = np.array([0.0, 0.0]) # External vector potential
 
+    #N = 4
     N = 4
     Nx, Ny = N, N
     
@@ -320,17 +393,20 @@ if __name__ == '__main__':
     
     from plot_lanczos_vs_chebyshev import *
 
-    recursion_steps = 128
+    recursion_steps = 128 * 8
 
     H = H_r
     
     Emin, Emax = sparse_eigsh_emin_emax(H)
+    print(f'Emin = {Emin}, Emax = {Emax}')
 
     eps = 0.1
+    eps_w = 10. / beta
     w_min, w_max = Emin - eps, Emax + eps
     w = np.linspace(w_min, w_max, num=recursion_steps*10)
     
     shift, scale = chebyshev_shift_scale(Emin, Emax, eps=eps)
+    print(f'shift = {shift}, scale = {scale}')
 
     v = np.zeros((H.shape[0]), dtype=complex)
     v[0] = 1.
@@ -343,7 +419,12 @@ if __name__ == '__main__':
     
     print('--> Cheb cond')
 
+    #N_cheb = 256
+    #N_cheb = 128
     N_cheb = 64
+    #N_cheb = 32
+    #N_cheb = 16
+    #N_cheb = 3
     
     H_s = H - sp.identity(H.shape[0]) * shift
     H_s /= scale
@@ -361,10 +442,27 @@ if __name__ == '__main__':
     np.testing.assert_array_almost_equal(mu_ref, mu_n[:N_cheb])
 
     # -- Conductivity tensor
+
+    Rblocks = 10
+    R = 100
     
+    mu_xx_ref = get_mu_tensor_stochastic_trace(v_x, v_x, H_s, N_cheb, R, Rblocks)
+    #mu_xx = mu_xx_ref
     mu_xx = get_mu_tensor(v_x, v_x, H_s, N_cheb)
     print(f'mu_xx.shape = {mu_xx.shape}')
+    #mu_xx = mu_xx_ref
+    
+    #print(f'Re[mu_xx] =\n{mu_xx.real}')
+    #print(f'Im[mu_xx] =\n{mu_xx.imag}')
 
+    #print(f'Re[mu_xx_ref] =\n{mu_xx_ref.real}')
+    #print(f'Im[mu_xx_ref] =\n{mu_xx_ref.imag}')
+
+    diff = np.max(np.abs(mu_xx - mu_xx_ref))
+    print(f'diff = {diff:2.2E}')
+
+    #exit()
+    
     x = (w - shift) / scale
 
     Gamma = eval_Gamma_nm(x, N_cheb)
@@ -372,7 +470,8 @@ if __name__ == '__main__':
 
     I = np.einsum('xnm,nm->x', Gamma, mu_xx)
 
-    mus_cheb = np.linspace(-6, 6, num=128)
+    #mus_cheb = np.linspace(-6, 6, num=16+1)
+    mus_cheb = np.linspace(w_min, w_max, num=128)
     sigmas_cheb = np.empty_like(mus_cheb, dtype=complex)
 
     def eval_sigma_integral(x, I, scale, mu, beta):
@@ -380,11 +479,12 @@ if __name__ == '__main__':
         sigma = np.trapz(I * f, x=x)
 
         # FIXME: Figure out scale factor
+        N_gamma = H_s.shape[0]
         
-        #sigma *= -2/scale**2 * 4/np.pi
-        #sigma *= -1/scale**2 * 4/np.pi
-        sigma *= -1/scale**2 
-        #sigma *= -2/scale**2
+        #sigma *= -1/scale**2 / N_gamma / N_cheb * 8 / np.pi
+        #sigma *= -1/scale / N_gamma / N_cheb
+        sigma *= -1 / N_gamma / N_cheb * 2 / np.pi
+        
         return sigma
     
     for idx, mu in enumerate(mus_cheb):
@@ -393,6 +493,56 @@ if __name__ == '__main__':
 
     norm = np.trapz(sigmas_cheb, x=mus_cheb).real
     print(f'norm = {norm}')
+
+    print(f'mus_cheb = {mus_cheb}')
+    print(f'sigmas_cheb = {sigmas_cheb.real}')
+
+    if True:
+        # -- Linear response current-current response function in imaginary time
+
+        from pydlr import dlr
+
+        d = dlr(lamb=beta * 2 * 4 * 10, eps=1e-12)
+        print(f'N_dlr = {len(d)}')
+        tau_l = d.get_tau(beta)
+        tau_l_rev = beta - tau_l
+        #dlr_tau_integral_weight = -np.tanh(d.dlrrf/2) * beta / d.dlrrf / H.shape[0] / 2
+
+        sigmas_dlr = np.empty_like(mus_cheb, dtype=complex)
+
+        Id = sp.identity(H.shape[0])
+        for idx, mu in enumerate(mus_cheb):
+            print(f'idx = {idx}, mu = {mu}')
+            H_aa = (H - mu * Id).todense()
+
+            G_laa = d.free_greens_function_tau(H_aa, beta, xi=-1)                                      
+            G_xaa = d.dlr_from_tau(G_laa)
+            G_laa_rev = d.eval_dlr_tau(G_xaa, tau_l_rev, beta)
+
+            chi_l = np.einsum('ab,lac,lbd,cd->l', v_x.todense(), G_laa, G_laa_rev, v_x.todense())        
+            chi_x = d.dlr_from_tau(chi_l)
+
+            #sigma_dlr_ref = np.sum(chi_x * dlr_tau_integral_weight).real
+            sigma_dlr = -d.eval_dlr_freq(chi_x, np.array([0.]), beta, xi=+1) / H.shape[0]
+
+            #diff = np.max(np.abs(sigma_dlr - sigma_dlr_ref))
+            #print(f'dlr diff = {diff:+2.2E} -- {sigma_dlr}, {sigma_dlr_ref}')
+            sigmas_dlr[idx] = sigma_dlr
+
+        print(f'sigmas_dlr = {sigmas_dlr}')
+
+        if False:
+            import matplotlib.pyplot as plt
+
+            plt.figure()
+            plt.plot(mus_cheb, sigmas_cheb.real, 'o-', label='cheb')
+            plt.plot(mus_cheb, sigmas_dlr.real, 'x-', label='dlr')
+            plt.legend()
+            plt.tight_layout()
+    
+            #plt.show(); exit()
+    
+    #exit()
 
     # ----------------------------------------------------------------
 
@@ -406,12 +556,17 @@ if __name__ == '__main__':
     nn = n[:, None] + n[None, :]
 
     mu_plot = np.abs(mu_xx.flatten().real)
-
     idx = mu_plot < 1e-10
     mu_plot[idx] = 0
 
-    plt.plot(nn.flatten(), mu_plot, 'o', alpha=0.5)
+    mu_plot_ref = np.abs(mu_xx_ref.flatten().real)
+    idx = mu_plot_ref < 1e-10
+    mu_plot_ref[idx] = 0
+    
+    plt.plot(nn.flatten(), mu_plot, 'o', alpha=0.5, label='full Tr')
+    plt.plot(nn.flatten(), mu_plot_ref, '.', alpha=0.5, label='rng Tr')
     plt.semilogy([], [])
+    plt.legend(loc='upper right')
     plt.xlabel(r'$n+m$')
     plt.ylabel(r'$\mu^{(xx)}_{nm}$')
     plt.grid(True)
@@ -481,7 +636,8 @@ if __name__ == '__main__':
     mu = 0.0 # Chemical potential
     A = np.array([0.0, 0.0]) # External vector potential
 
-    mus = np.linspace(-6, 6, num=128)
+    #mus = np.linspace(-6, 6, num=128)
+    mus = np.linspace(w_min, w_max, num=128)
     ns = np.zeros_like(mus)
     ns_ref = np.zeros_like(mus)
 
@@ -530,6 +686,7 @@ if __name__ == '__main__':
 
     plt.plot(mus, djs, '-', label='momentum space')
     plt.plot(mus_cheb, sigmas_cheb.real, '-', label='chebyshev $\sigma_{xx}$')
+    plt.plot(mus_cheb, sigmas_dlr.real, '--', label='dlr')
     plt.legend(loc='upper left')
     plt.ylabel(r'$d \langle j_x \rangle / d A_x$')
     plt.xlabel(r'$\mu$')
